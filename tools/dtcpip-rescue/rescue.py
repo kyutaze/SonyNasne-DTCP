@@ -17,6 +17,11 @@ which does not consume copies and does not change the source). The
 
 Stdlib only; run with Python 3.10+.
 
+Saved file names: <content id>_<yyyy-MM-dd>「<title>」.ts, where the date is
+the broadcast day (the day rolls over at 05:00) taken from the recording's
+scheduled start time, or its recording start time when that is absent.
+The saved file's modification time is set to that same start time.
+
 Configuration (first match wins):
   credentials : --credentials / $RESCUE_CREDENTIALS / <base>/data/credentials.env
   data dir    : --data-dir    / $RESCUE_DATA_DIR    / directory of the credentials file
@@ -42,7 +47,7 @@ import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 TOOL_DIR = Path(__file__).resolve().parent
@@ -56,6 +61,14 @@ LEGACY_ROOT = (
 LEGACY_PYDTCPIP_HOME = (
     Path.home() / 'GitTmp/myClaude/SonyNasne-DTCP.work/2026-11-15-pydtcpip/pydtcpip'
 )
+
+# A recording's calendar date is its broadcast day, which rolls over at
+# 05:00 (a 00:35 late-night show belongs to the previous day).
+BROADCAST_DAY_START_HOUR = 5
+# Byte budget for the title part of a file name. The id / date prefix, the
+# surrounding 「」 and the extension add about 40 bytes, so even the longest
+# derived name (.partial) stays under 255 bytes.
+TITLE_MAX_BYTES = 180
 
 
 @dataclass
@@ -191,9 +204,13 @@ def child_env() -> dict[str, str]:
 
 
 def sanitize_title(title: str) -> str:
-    """Make a title safe for a filename (same rules as pydtcpip's CLI)."""
+    """Make a title safe for a filename.
+
+    Same character rules as pydtcpip's CLI; the length limit is lower
+    (TITLE_MAX_BYTES) to leave room for the id / date prefix.
+    """
     title = title.translate(str.maketrans(dict.fromkeys('/\\:*?"<>|\r\n\t', '_')))
-    title = title.encode('utf-8')[:200].decode('utf-8', errors='ignore').rstrip(' .')
+    title = title.encode('utf-8')[:TITLE_MAX_BYTES].decode('utf-8', errors='ignore').rstrip(' .')
     return title or 'recording'
 
 
@@ -201,9 +218,46 @@ def sanitize_id(object_id: str) -> str:
     return ''.join(char if char.isalnum() or char in '-_' else '_' for char in object_id)
 
 
-def recording_filename(recording: dict) -> str:
+def recording_start(recording: dict) -> datetime | None:
+    """Start time of a recording: `scheduled_start_time`, else `date`.
+
+    `date` is the recording start, which the recorder sets a few seconds
+    before the scheduled start. Returns None when neither value can be read.
+    """
+    for key in ('scheduled_start_time', 'date'):
+        value = recording.get(key)
+        if not value:
+            continue
+        try:
+            return datetime.fromisoformat(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def broadcast_date(recording: dict) -> str:
+    """Broadcast day (yyyy-MM-dd) of a recording; the day rolls over at 05:00.
+
+    The start time is read with its own UTC offset -- no conversion to this
+    machine's time zone. Returns 'unknown' when there is no readable start.
+    """
+    started = recording_start(recording)
+    if started is None:
+        return 'unknown'
+    return (started - timedelta(hours=BROADCAST_DAY_START_HOUR)).date().isoformat()
+
+
+def recording_basename(recording: dict) -> str:
+    """File name without extension: <id>_<yyyy-MM-dd>「<title>」"""
     content_id = recording.get('content_id') or recording['id']
-    return f"{sanitize_id(content_id)}-{sanitize_title(recording['title'])}.ts"
+    return (
+        f"{sanitize_id(content_id)}_{broadcast_date(recording)}"
+        f"「{sanitize_title(recording['title'])}」"
+    )
+
+
+def recording_filename(recording: dict) -> str:
+    return f'{recording_basename(recording)}.ts'
 
 
 def _pydtcpip_python_or_exit(config: Config) -> Path:
@@ -369,6 +423,13 @@ def fetch_one(
         return False
 
     os.replace(partial, final)
+    started = recording_start(recording)
+    if started is not None:
+        # Modification time = the recording's start time (not the download time).
+        try:
+            os.utime(final, (final.stat().st_atime, started.timestamp()))
+        except (OSError, OverflowError, ValueError) as error:
+            emit(f'note: could not set the modification time of {filename}: {error}')
     digest = sha256_of(final)
     fetched_at = datetime.now().isoformat(timespec='seconds')
     sidecar = dict(recording)

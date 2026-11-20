@@ -482,7 +482,9 @@ class RescueApp(tk.Tk):
             copies_text = (
                 str(copies.get('value')) if copies.get('status') == 'known' else '?'
             )
-            date = (recording.get('date') or '').replace('T', ' ')[:16]
+            # Scheduled start time when the listing has it, else the recording start.
+            started = recording.get('scheduled_start_time') or recording.get('date') or ''
+            date = started.replace('T', ' ')[:16]
             self.tree.insert(
                 '',
                 'end',

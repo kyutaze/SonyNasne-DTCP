@@ -73,6 +73,15 @@ def protection_dump(value) -> dict:
     return {'status': value.status, 'value': value.value}
 
 
+def iso_or_none(value) -> str | None:
+    """JSON-safe ISO 8601 text for a timestamp that may be a str or datetime."""
+    if value is None:
+        return None
+    if hasattr(value, 'isoformat'):
+        return value.isoformat()
+    return str(value)
+
+
 def recording_dump(recording: Recording) -> dict:
     original = recording.original_resource
     resources = []
@@ -92,6 +101,9 @@ def recording_dump(recording: Recording) -> dict:
         'parent_id': recording.parent_id,
         'title': recording.title,
         'date': recording.date,
+        # Used for the saved file name's broadcast day (rescue.py falls back
+        # to `date` when this is absent).
+        'scheduled_start_time': iso_or_none(getattr(recording, 'scheduled_start_time', None)),
         'duration': recording.duration,
         'channel_name': recording.channel_name,
         'description': recording.description,
