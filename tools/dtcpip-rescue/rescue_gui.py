@@ -7,6 +7,9 @@ Features (kept minimal on purpose):
     recorder answered, with the reason when it did not
   - list recordings on the recorder (no credentials needed)
   - fetch selected recordings via pydtcpip `stream` (see rescue.py)
+  - optional post-fetch conversion with ts_fix (checkbox, off by
+    default): the converted TS lands in out/fixed/ with programme
+    information regular tools can read; the manifest is unaffected
   - progress bar (watches the .partial file size) with the transfer
     rate in decimal MB/s, and a log pane
   - manifest view with SHA-256 re-verification
@@ -283,6 +286,12 @@ class RescueApp(tk.Tk):
             buttons, text='選択した録画を救出', command=self._start_fetch
         )
         self.fetch_button.pack(side='left', padx=(6, 0))
+        self.fix_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            buttons,
+            text='番組情報を読める TS に変換する',
+            variable=self.fix_var,
+        ).pack(side='left', padx=(10, 0))
         self.server_var = tk.StringVar(value='未接続')
         ttk.Label(buttons, textvariable=self.server_var).pack(side='left', padx=(12, 0))
 
@@ -531,6 +540,7 @@ class RescueApp(tk.Tk):
             return
         config = self._current_config()
         listing = self.listing
+        fix = self.fix_var.get()
         self.fetching = True
         self.fetch_button.config(state='disabled')
         self.list_button.config(state='disabled')
@@ -554,7 +564,13 @@ class RescueApp(tk.Tk):
                 )
                 try:
                     ok = rescue.fetch_one(
-                        config, listing, recording, force=False, timeout=0, emit=emit
+                        config,
+                        listing,
+                        recording,
+                        force=False,
+                        timeout=0,
+                        fix=fix,
+                        emit=emit,
                     )
                 except Exception as error:
                     emit(f'FAILED: {recording.get("title")} ({error!r})')

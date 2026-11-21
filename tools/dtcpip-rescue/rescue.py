@@ -15,6 +15,15 @@ Transfers use pydtcpip's `stream` command (playback-style reception,
 which does not consume copies and does not change the source). The
 `move` / `receive` dubbing commands are deliberately never used.
 
+With `--fix` (CLI) or the GUI checkbox, a successful fetch is followed
+by an optional post-process: ts_fix.py converts the rescued partial TS
+into a regular TS whose programme information (channel / title /
+broadcast time) tools can read, written to `out/fixed/`. Conversion is
+off by default, is reported separately from the rescue itself, and
+never changes the manifest / SHA256SUMS (those describe the rescued
+bytes); the converted file's location and SHA-256 are recorded in the
+sidecar `.ts.json` instead.
+
 Stdlib only; run with Python 3.10+.
 
 Saved file names: <content id>_<yyyy-MM-dd>「<title>」.ts, where the date is
@@ -83,6 +92,10 @@ class Config:
     @property
     def listings_dir(self) -> Path:
         return self.out_dir / 'listings'
+
+    @property
+    def fixed_dir(self) -> Path:
+        return self.out_dir / 'fixed'
 
     @property
     def manifest_path(self) -> Path:
@@ -354,6 +367,70 @@ def update_manifest(config: Config, entry: dict) -> None:
     config.sha256sums_path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
 
 
+def _record_fixed(config: Config, filename: str, fixed: dict) -> None:
+    """Record a converted file in the sidecar `.ts.json`.
+
+    The sidecar's `fetched` block (and the manifest) keep describing the
+    rescued bytes; the converted file gets its own `fixed` block with
+    its location and SHA-256, so the two are never confused.
+    """
+    sidecar_path = config.out_dir / f'{filename}.json'
+    try:
+        sidecar = json.loads(sidecar_path.read_text(encoding='utf-8'))
+    except Exception:
+        sidecar = {'file': filename}
+    sidecar['fixed'] = fixed
+    sidecar_path.write_text(
+        json.dumps(sidecar, ensure_ascii=False, indent=2) + '\n', encoding='utf-8'
+    )
+
+
+def convert_fetched(config: Config, filename: str, *, emit=print) -> bool:
+    """Convert a fetched TS with ts_fix into `out/fixed/<filename>`.
+
+    A post-process on the rescued file only: it reads no credentials,
+    does not touch the manifest / SHA256SUMS, and a failure is reported
+    separately (the rescue itself stays successful). Returns True when
+    the converted file is in place afterwards.
+    """
+    import ts_fix
+
+    src = config.out_dir / filename
+    dst = config.fixed_dir / filename
+    if dst.exists():
+        emit(f'fix: already converted: fixed/{filename}')
+    else:
+        config.fixed_dir.mkdir(parents=True, exist_ok=True)
+        converter = ts_fix.Converter()
+        try:
+            converter.convert(src, dst)
+        except Exception as error:
+            # ts_fix writes via a `.partial` sibling; do not leave it behind.
+            dst.with_name(dst.name + '.partial').unlink(missing_ok=True)
+            emit(f'fix FAILED: {filename} ({error}) -- the rescued file is unaffected')
+            return False
+        stats = converter.stats
+        emit(
+            f"fix: converted (packets {stats['packets_in']}, "
+            f"added {stats['packets_added']}, sit {stats['sit_sections']})"
+        )
+    digest = sha256_of(dst)
+    size = dst.stat().st_size
+    _record_fixed(
+        config,
+        filename,
+        {
+            'file': f'fixed/{filename}',
+            'bytes': size,
+            'sha256': digest,
+            'at': datetime.now().isoformat(timespec='seconds'),
+            'tool': 'ts_fix (partial TS -> regular TS; NIT/SDT/EIT/TOT from SIT)',
+        },
+    )
+    emit(f'fix OK: fixed/{filename} ({size} bytes, sha256 {digest})')
+    return True
+
+
 def fetch_one(
     config: Config,
     listing: dict,
@@ -361,6 +438,7 @@ def fetch_one(
     *,
     force: bool,
     timeout: float,
+    fix: bool = False,
     emit=print,
 ) -> bool:
     """Fetch one recording via pydtcpip `stream`. Returns True on success."""
@@ -381,6 +459,8 @@ def fetch_one(
     partial = config.out_dir / f'.{filename}.partial'
     if final.exists() and not force:
         emit(f'skip (already fetched): {filename}')
+        if fix:
+            convert_fetched(config, filename, emit=emit)
         return True
 
     log_path = config.logs_dir / f'{stamp()}-fetch-{sanitize_id(object_id)}.log'
@@ -457,6 +537,8 @@ def fetch_one(
         },
     )
     emit(f'OK: {filename} ({size} bytes, sha256 {digest})')
+    if fix:
+        convert_fetched(config, filename, emit=emit)
     return True
 
 
@@ -494,12 +576,24 @@ def main() -> int:
     fetch_parser.add_argument(
         '--timeout', type=float, default=0, help='Per-transfer timeout in seconds (0 = none)'
     )
+    fetch_parser.add_argument(
+        '--fix',
+        action='store_true',
+        help='After a successful fetch, also convert the TS with ts_fix '
+        'into out/fixed/ (programme information readable by regular tools)',
+    )
     add_common_options(fetch_parser)
 
     all_parser = sub.add_parser('fetch-all', help='Fetch every recording in the listing.')
     all_parser.add_argument('--force', action='store_true', help='Refetch even if already saved')
     all_parser.add_argument(
         '--timeout', type=float, default=0, help='Per-transfer timeout in seconds (0 = none)'
+    )
+    all_parser.add_argument(
+        '--fix',
+        action='store_true',
+        help='After each successful fetch, also convert the TS with ts_fix '
+        'into out/fixed/ (programme information readable by regular tools)',
     )
     add_common_options(all_parser)
 
@@ -531,11 +625,11 @@ def main() -> int:
         if recording is None:
             print(f'recording ID not found in the current listing: {args.id}', file=sys.stderr)
             return 2
-        return 0 if fetch_one(config, recording=recording, listing=listing, force=args.force, timeout=args.timeout) else 1
+        return 0 if fetch_one(config, recording=recording, listing=listing, force=args.force, timeout=args.timeout, fix=args.fix) else 1
 
     # fetch-all
     results = [
-        fetch_one(config, listing, recording, force=args.force, timeout=args.timeout)
+        fetch_one(config, listing, recording, force=args.force, timeout=args.timeout, fix=args.fix)
         for recording in listing['recordings']
     ]
     print(f'fetch-all: {sum(results)}/{len(results)} succeeded')
