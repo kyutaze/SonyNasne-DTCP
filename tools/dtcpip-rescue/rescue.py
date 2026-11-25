@@ -26,7 +26,7 @@ sidecar `.ts.json` instead.
 
 Stdlib only; run with Python 3.10+.
 
-Saved file names: <content id>_<yyyy-MM-dd>「<title>」.ts, where the date is
+Saved file names: <content id>_<yyyy.MM.dd>「<title>」.ts, where the date is
 the broadcast day (the day rolls over at 05:00) taken from the recording's
 scheduled start time, or its recording start time when that is absent.
 The saved file's modification time is set to that same start time.
@@ -270,7 +270,7 @@ def recording_start(recording: dict) -> datetime | None:
 
 
 def broadcast_date(recording: dict) -> str:
-    """Broadcast day (yyyy-MM-dd) of a recording; the day rolls over at 05:00.
+    """Broadcast day (yyyy.MM.dd) of a recording; the day rolls over at 05:00.
 
     The start time is read with its own UTC offset -- no conversion to this
     machine's time zone. Returns 'unknown' when there is no readable start.
@@ -278,11 +278,12 @@ def broadcast_date(recording: dict) -> str:
     started = recording_start(recording)
     if started is None:
         return 'unknown'
-    return (started - timedelta(hours=BROADCAST_DAY_START_HOUR)).date().isoformat()
+    day = (started - timedelta(hours=BROADCAST_DAY_START_HOUR)).date()
+    return f'{day.year:04d}.{day.month:02d}.{day.day:02d}'
 
 
 def recording_basename(recording: dict) -> str:
-    """File name without extension: <id>_<yyyy-MM-dd>「<title>」"""
+    """File name without extension: <id>_<yyyy.MM.dd>「<title>」"""
     content_id = recording.get('content_id') or recording['id']
     return (
         f"{sanitize_id(content_id)}_{broadcast_date(recording)}"
