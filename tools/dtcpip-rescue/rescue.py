@@ -52,6 +52,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -78,6 +79,19 @@ BROADCAST_DAY_START_HOUR = 5
 # surrounding 「」 and the extension add about 40 bytes, so even the longest
 # derived name (.partial) stays under 255 bytes.
 TITLE_MAX_BYTES = 180
+# Enclosed symbols that broadcasters append to titles (字 / 二 / 解 / 再 / 新 ...
+# in a square). They are dropped from file names.
+TITLE_STRIP_CHARS = (
+    '\U0001F14D'  # 🅍 SQUARED SS
+    '\U0001F211'  # 🈑 SQUARED CJK UNIFIED IDEOGRAPH-5B57 (字)
+    '\U0001F212'  # 🈒 SQUARED CJK UNIFIED IDEOGRAPH-53CC (双)
+    '\U0001F213'  # 🈓 SQUARED KATAKANA DE (デ)
+    '\U0001F214'  # 🈔 SQUARED CJK UNIFIED IDEOGRAPH-4E8C (二)
+    '\U0001F216'  # 🈖 SQUARED CJK UNIFIED IDEOGRAPH-89E3 (解)
+    '\U0001F21E'  # 🈞 SQUARED CJK UNIFIED IDEOGRAPH-518D (再)
+    '\U0001F21F'  # 🈟 SQUARED CJK UNIFIED IDEOGRAPH-65B0 (新)
+    '\U0001F221'  # 🈡 SQUARED CJK UNIFIED IDEOGRAPH-7D42 (終)
+)
 
 
 @dataclass
@@ -220,10 +234,17 @@ def sanitize_title(title: str) -> str:
     """Make a title safe for a filename.
 
     Same character rules as pydtcpip's CLI; the length limit is lower
-    (TITLE_MAX_BYTES) to leave room for the id / date prefix.
+    (TITLE_MAX_BYTES) to leave room for the id / date prefix. The symbols in
+    TITLE_STRIP_CHARS are removed and runs of white space (half- or full-width)
+    are squeezed to the run's first character before the length cut, so they
+    do not use up that budget. White space at either end is trimmed (and
+    trailing dots), after the cut, which can itself leave a dangling space.
     """
+    title = title.translate(str.maketrans('', '', TITLE_STRIP_CHARS))
     title = title.translate(str.maketrans(dict.fromkeys('/\\:*?"<>|\r\n\t', '_')))
-    title = title.encode('utf-8')[:TITLE_MAX_BYTES].decode('utf-8', errors='ignore').rstrip(' .')
+    title = re.sub(r'(\s)\s+', r'\1', title)
+    title = title.encode('utf-8')[:TITLE_MAX_BYTES].decode('utf-8', errors='ignore')
+    title = re.sub(r'\A\s+|[\s.]+\Z', '', title)
     return title or 'recording'
 
 
